@@ -6,8 +6,11 @@
     <title>hyw</title>
   </head>
   <body data-screen="home">
-    <!-- 游玩画面用的 Pixi 画布 -->
-    <div id="stage"></div>
+    <!-- 游玩画面用的 Pixi 画布，两侧的留白遮罩盖在画布上 -->
+    <div id="stage">
+      <div class="side-bar left"></div>
+      <div class="side-bar right"></div>
+    </div>
 
     <!-- —————————————— 主页面 —————————————— -->
     <section id="screen-home" class="screen">
@@ -73,7 +76,7 @@
 
       <button id="play-back" class="ghost" type="button">← 返回</button>
 
-      <div id="controls" class="panel" hidden>
+      <div id="controls" hidden>
         <button id="play" type="button">播放</button>
         <button id="restart" type="button">重来</button>
         <button id="mode" type="button">游玩中</button>

@@ -24,7 +24,8 @@ await app.init({
   autoDensity: true,
   resolution: window.devicePixelRatio,
 });
-$('stage').appendChild(app.canvas);
+// 画布必须排在两条留白遮罩前面，否则会盖住它们
+$('stage').prepend(app.canvas);
 
 const renderer = new ChartRenderer(app);
 
@@ -47,6 +48,21 @@ const chartSeconds = (): number => (chart ? clock.seconds - chart.meta.offset : 
 
 // 输入挂到 canvas 上，点界面按钮就不会被当成音符输入
 const input = new InputTracker(app.canvas, chartSeconds);
+
+const infoEl = $('info');
+
+/**
+ * 谱面设计宽高比。RPE / PhiEdit 的设计画布是 1350×900，也就是 1.5。
+ * 谱面包里带 aspectRatio 的话（Phira 的 info.yml 有）就用它。
+ */
+const DEFAULT_PLAYFIELD_ASPECT = 1.5;
+let playfieldAspect = DEFAULT_PLAYFIELD_ASPECT;
+
+/**
+ * 两侧留白窄于这个宽度就塞不下信息面板，只能让它浮在画面上并自动淡出。
+ * 参考：1280×720 的窗口按 1.5 比例留白，每侧只有 100px。
+ */
+const MIN_BAR_FOR_INFO = 88;
 
 const OFFSET_KEY = 'hyw.offset';
 clock.offset = Number(localStorage.getItem(OFFSET_KEY) ?? 0);
@@ -92,6 +108,23 @@ function updateHome(): void {
   if (canResume) $('resume-note').textContent = chartName;
 }
 
+/**
+ * 按窗口尺寸和谱面比例算两侧留白，并决定信息面板放哪儿。
+ * 窗口比设计比例更窄时留白会是 0（甚至为负），这时不限制游玩区。
+ */
+function updateLayout(): void {
+  const bar = Math.max(
+    0,
+    Math.round((window.innerWidth - window.innerHeight * playfieldAspect) / 2),
+  );
+  document.documentElement.style.setProperty('--scene-bar', `${bar}px`);
+
+  const placement = bar >= MIN_BAR_FOR_INFO ? 'bar' : 'overlay';
+  if (infoEl.dataset.placement !== placement) infoEl.dataset.placement = placement;
+  // 已经挪到留白里就不用再淡出了
+  if (placement === 'bar' && infoEl.dataset.dim === '1') infoEl.dataset.dim = '0';
+}
+
 function updateChartInfo(): void {
   const hasChart = chart !== null;
   $('controls').hidden = !hasChart;
@@ -102,11 +135,21 @@ function updateChartInfo(): void {
 
   const beats = chart.time.beatsAt(chartSeconds());
   const bpm = chart.time.segments[0]?.bpm ?? 0;
-  $('info').innerHTML = `
+  // 塞进侧边留白时只有 80~140px 宽，长句子会折成一大坨，所以换成逐行短内容
+  const compact = infoEl.dataset.placement === 'bar';
+  $('info').innerHTML = compact
+    ? `
+    <div class="title">${escapeHtml(chart.meta.name)}</div>
+    <div class="sub">${escapeHtml(chart.meta.level)}</div>
+    <div class="sub">${escapeHtml(chart.meta.charter)}</div>
+    <div class="dim">${escapeHtml(chart.meta.composer)}</div>
+    <div class="dim">${chart.totalNotes} 音符 · ${bpm} BPM</div>
+  `
+    : `
     <div class="title">${escapeHtml(chart.meta.name)}</div>
     <div class="sub">${escapeHtml(chart.meta.level)} · ${escapeHtml(chart.meta.charter)} · ${escapeHtml(chart.meta.composer)}</div>
     <div class="sub">${chart.lines.length} 条判定线 · ${chart.totalNotes} 音符 · 最大连击 ${chart.maxCombo} · ${bpm} BPM</div>
-    <div class="sub dim">${escapeHtml(chartName)} · ${beats.toFixed(1)} 拍 · 偏移 ${(clock.offset * 1000).toFixed(0)}ms</div>
+    <div class="dim">${escapeHtml(chartName)} · ${beats.toFixed(1)} 拍 · 偏移 ${(clock.offset * 1000).toFixed(0)}ms</div>
   `;
 }
 
@@ -161,6 +204,13 @@ async function loadPezBuffer(buffer: ArrayBuffer, sourceName: string): Promise<v
   if (!isPez(buffer)) throw new Error('这不是 .pez 文件（ZIP 头不对）');
 
   const pkg = loadPez(buffer);
+
+  // 谱面包里带了宽高比就用它，否则按 RPE 的设计画布 1.5
+  const declaredAspect = Number(pkg.info.aspectRatio ?? pkg.info.AspectRatio);
+  playfieldAspect =
+    Number.isFinite(declaredAspect) && declaredAspect > 0.5 && declaredAspect < 4
+      ? declaredAspect
+      : DEFAULT_PLAYFIELD_ASPECT;
   const parsed = parseChart(pkg.chart);
 
   chart = parsed;
@@ -194,6 +244,7 @@ async function loadPezBuffer(buffer: ArrayBuffer, sourceName: string): Promise<v
 
   setStatus(audioBytes ? '' : '这个谱面包里没有音频，只能看谱面', audioBytes ? 'info' : 'error');
   $('play').textContent = '播放';
+  updateLayout();
   updateChartInfo();
   renderGameHud(true);
 }
@@ -337,6 +388,16 @@ function nudgeOffset(deltaMs: number): void {
 $('offset-earlier').addEventListener('click', () => nudgeOffset(-10));
 $('offset-later').addEventListener('click', () => nudgeOffset(10));
 
+// 游玩时一段时间没操作就把信息面板淡掉（它压在音符上）。鼠标一动就恢复。
+let lastActivityAt = performance.now();
+const markActivity = (): void => {
+  lastActivityAt = performance.now();
+};
+window.addEventListener('pointermove', markActivity, { passive: true });
+window.addEventListener('pointerdown', markActivity, { passive: true });
+window.addEventListener('wheel', markActivity, { passive: true });
+window.addEventListener('keydown', markActivity);
+
 window.addEventListener('keydown', (event) => {
   if (event.code === 'Space') {
     event.preventDefault();
@@ -385,6 +446,9 @@ document.body.addEventListener('drop', (event) => {
 const seekEl = $<HTMLInputElement>('seek');
 const timeEl = $('time');
 
+/** 播放中且 2.5 秒没操作时，浮在画面上的信息面板淡到几乎看不见 */
+const IDLE_DIM_AFTER_MS = 2500;
+
 let lastHudAt = 0;
 app.ticker.add(() => {
   if (!chart) return;
@@ -403,6 +467,15 @@ app.ticker.add(() => {
   const now = performance.now();
   if (now - lastHudAt < 50) return;
   lastHudAt = now;
+
+  // 只有浮在画面上的时候才需要淡出；已经挪进留白里就保持常显
+  const dim =
+    infoEl.dataset.placement === 'overlay' &&
+    clock.isPlaying &&
+    now - lastActivityAt > IDLE_DIM_AFTER_MS
+      ? '1'
+      : '0';
+  if (infoEl.dataset.dim !== dim) infoEl.dataset.dim = dim;
 
   renderGameHud();
   const duration = clock.duration || chart.durationSeconds;
@@ -489,9 +562,16 @@ window.hyw = {
   input,
 };
 
+window.addEventListener('resize', () => {
+  updateLayout();
+  // 留白宽度变了可能要在紧凑/完整两种信息版式之间切换
+  updateChartInfo();
+});
+
 // —————————————— 启动 ——————————————
 
 renderChartList();
+updateLayout();
 showScreen('home');
 // ticker 在菜单画面不需要跑，进游玩画面时再启
 app.ticker.stop();

@@ -319,29 +319,93 @@ button:hover {
 
 /* —————————————— 游玩 —————————————— */
 
+/*
+ * 侧边留白。
+ *
+ * 谱面的设计画布是 1350×900（宽高比 1.5），而窗口通常是 16:9 —— 更宽。
+ * 这两条遮罩盖住设计区域之外的画面，等于把游玩区限制成设计比例、两侧留白。
+ * 它们只是盖在画布上（不是真的裁剪），所以对渲染逻辑零侵入；
+ * 留白宽度由 JS 按窗口算出来写进 --scene-bar。
+ */
+#stage .side-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--scene-bar, 0px);
+  /* 比画布底色再暗一点，让留白边界看得出来 */
+  background: #06070a;
+  /* 留白区域点下去仍然应该算作判定输入 */
+  pointer-events: none;
+}
+
+#stage .side-bar.left {
+  left: 0;
+  border-right: 1px solid rgba(140, 170, 220, 0.09);
+}
+
+#stage .side-bar.right {
+  right: 0;
+  border-left: 1px solid rgba(140, 170, 220, 0.09);
+}
+
+/*
+ * 谱面信息面板。
+ *   placement=bar     —— 留白够宽，放进左侧留白里（真正的「谱面之外」）
+ *   placement=overlay —— 留白太窄塞不下，只好浮在画面上，播放时自动淡出
+ * pointer-events: none 是必须的：Phigros 点哪里都算，面板要是吃掉点按就成了判定死区。
+ */
 #info {
   position: fixed;
-  top: 14px;
-  left: 14px;
+  top: 10px;
+  left: 10px;
   z-index: 2;
-  padding: 10px 14px;
-  max-width: 46ch;
-  line-height: 1.6;
+  padding: 7px 11px;
+  line-height: 1.45;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+
+#info[data-placement="bar"] {
+  left: 7px;
+  width: calc(var(--scene-bar, 0px) - 14px);
+  padding: 0;
+}
+
+#info[data-placement="overlay"] {
+  max-width: 38ch;
+}
+
+#info[data-dim="1"][data-placement="overlay"] {
+  opacity: 0.07;
 }
 
 #info .title {
-  font-size: 17px;
+  font-size: 15px;
   font-weight: 600;
   color: #bfe0ff;
+  overflow-wrap: anywhere;
 }
 
 #info .sub {
+  font-size: 12px;
   color: #9db2d0;
+  overflow-wrap: anywhere;
 }
 
 #info .dim {
   color: #6d7f9a;
-  font-size: 12px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+/* 放进留白里之后要更紧凑，窄条里才塞得下 */
+#info[data-placement="bar"] .title {
+  font-size: 13px;
+}
+
+#info[data-placement="bar"] .sub,
+#info[data-placement="bar"] .dim {
+  font-size: 11px;
 }
 
 #play-back {
@@ -351,6 +415,13 @@ button:hover {
   z-index: 2;
 }
 
+/*
+ * 控制栏。
+ *
+ * 它原来是一整条带背景的面板，横在画面底部 —— 那既压住音符，又是一大片判定死区
+ * （Phigros 点哪里都算，面板会吃掉落在上面的点按）。
+ * 现在容器不吃事件、也没有背景，只有真正可交互的控件浮在那儿。
+ */
 #controls {
   position: fixed;
   bottom: 14px;
@@ -360,8 +431,24 @@ button:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  padding: 0;
   font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+#controls > * {
+  pointer-events: auto;
+}
+
+/* 纯装饰的元素别占着判定区 */
+#controls .spacer,
+#controls label {
+  pointer-events: none;
+}
+
+#controls button {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
 }
 
 #seek {
@@ -371,10 +458,11 @@ button:hover {
 }
 
 #time {
-  color: #9db2d0;
+  color: #c3d4ea;
   /* 固定宽度，避免读数变化时把整条控制栏挤得左右移动 */
   width: 18ch;
   text-align: center;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
 }
 
 .spacer {
@@ -382,7 +470,8 @@ button:hover {
 }
 
 #controls label {
-  color: #8b9db8;
+  color: #9db2d0;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
 }
 
 /* —————————————— 游玩 HUD —————————————— */
