@@ -1,0 +1,21 @@
+{
+  "name": "hyw",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "check:judgment": "rolldown tools/judgment-check.ts -o .tmp/judgment-check.mjs --format esm --platform node && node .tmp/judgment-check.mjs"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "pixi.js": "^8.22.0"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

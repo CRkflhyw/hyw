@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>hyw</title>
+  </head>
+  <body data-screen="home">
+    <!-- 游玩画面用的 Pixi 画布 -->
+    <div id="stage"></div>
+
+    <!-- —————————————— 主页面 —————————————— -->
+    <section id="screen-home" class="screen">
+      <div class="home-inner">
+        <h1 class="logo">hyw</h1>
+        <p class="tagline">Phigros 谱面预览与游玩</p>
+
+        <nav class="menu">
+          <button id="go-import" class="menu-item primary" type="button">
+            <span class="menu-label">导入谱面</span>
+            <span class="menu-note">选择 .pez 谱面包</span>
+          </button>
+          <button id="go-resume" class="menu-item" type="button" hidden>
+            <span class="menu-label">继续游玩</span>
+            <span class="menu-note" id="resume-note"></span>
+          </button>
+        </nav>
+
+        <p class="footnote">按空格开始/暂停　·　D F J K 也可以当点按用</p>
+      </div>
+    </section>
+
+    <!-- —————————————— 导入谱面 —————————————— -->
+    <section id="screen-import" class="screen">
+      <div class="import-inner">
+        <header class="screen-head">
+          <button id="import-back" class="ghost" type="button">← 返回</button>
+          <h2>导入谱面</h2>
+        </header>
+
+        <div id="drop-zone">
+          <div class="drop-title">把 <code>.pez</code> 文件拖到这里</div>
+          <div class="drop-actions">
+            <label id="file-label" for="file" class="button-like">选择文件</label>
+            <input id="file" type="file" accept=".pez" hidden />
+          </div>
+        </div>
+
+        <div class="library">
+          <div class="library-head">
+            <span>谱面库</span>
+            <span class="dim">把 .pez 放进项目的 charts/ 目录就会出现在这里</span>
+          </div>
+          <div id="chart-list" class="chart-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- —————————————— 游玩 —————————————— -->
+    <section id="screen-play" class="screen">
+      <div id="info" class="panel" hidden></div>
+
+      <div id="hud" class="panel" hidden>
+        <div class="hud-top">
+          <span id="score">0000000</span>
+          <span id="rank">F</span>
+        </div>
+        <div id="counts" class="hud-counts"></div>
+      </div>
+
+      <div id="combo" hidden></div>
+      <div id="judge-text" hidden></div>
+
+      <button id="play-back" class="ghost" type="button">← 返回</button>
+
+      <div id="controls" class="panel" hidden>
+        <button id="play" type="button">播放</button>
+        <button id="restart" type="button">重来</button>
+        <button id="mode" type="button">游玩中</button>
+        <input id="seek" type="range" min="0" max="1" step="0.01" value="0" />
+        <span id="time">0:00.00 / 0:00.00</span>
+        <span class="spacer"></span>
+        <label>偏移</label>
+        <button id="offset-earlier" type="button">–</button>
+        <button id="offset-later" type="button">+</button>
+      </div>
+    </section>
+
+    <div id="status" class="panel" hidden></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
