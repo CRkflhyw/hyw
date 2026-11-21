@@ -1,0 +1,45 @@
+授权范围 / Scope of License
+============================
+
+根目录 LICENSE 中的 MIT 许可证仅适用于本仓库的**源代码**（即 src/、tools/ 等目录下的
+程序代码，以及构建与配置文件）。
+
+The MIT license in the root LICENSE file applies only to the **source code** of
+this repository (the program code under src/ and tools/, plus build and
+configuration files).
+
+以下内容不在 MIT 授权范围内，版权归 CRkfl 所有，保留一切权利：
+
+- `charts/` 目录下的全部资产，包括但不限于 .pez 谱面包内的音频（.mp3）、
+  插画（.jpg 等）、谱面数据（.json）及元数据文件。
+
+未经版权人书面许可，不得复制、修改、分发、公开传播或用于商业用途。
+
+Assets under `charts/` — including but not limited to the audio, artwork,
+chart data and metadata contained in the .pez chart packages — are NOT covered
+by the MIT license. Copyright (c) 2026 CRkfl, all rights reserved. No copying,
+modification, distribution, public communication or commercial use without
+prior written permission from the copyright holder.
+
+
+第三方组件 / Third-Party Components
+==================================
+
+本项目在分发的构建产物中包含以下依赖，其许可证要求保留版权与许可声明：
+
+- pixi.js — MIT License, Copyright (c) 2013-2023 Mathew Groves, Chad Engler
+- fflate — MIT License, Copyright (c) 2026 Arjun Barrett
+
+以上版权行摘自当前锁定的依赖版本（pixi.js 8.x、fflate 0.8.x）随包附带的 LICENSE 文件，
+升级依赖后请以 node_modules/ 下对应包的 LICENSE 为准。
+
+完整许可证文本见各依赖包目录下的 LICENSE 文件，或 https://www.npmjs.com/package/<包名>。
+
+The distributed build output bundles the following dependencies, whose
+licenses require their copyright and permission notices to be preserved:
+
+- pixi.js — MIT License
+- fflate — MIT License
+
+Full license texts are available in each package's directory under
+node_modules/ after `npm install`.
