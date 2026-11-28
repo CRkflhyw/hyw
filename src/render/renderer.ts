@@ -12,10 +12,15 @@ import type { PlaySession } from '../game/session';
  */
 const PLAYFIELD_HEIGHT = 900;
 
-/** 音符在 RPE 坐标下的基准尺寸 */
-const NOTE_WIDTH = 170;
-const NOTE_HEIGHT = 34;
-const DRAG_HEIGHT = 26;
+/**
+ * 音符在 RPE 坐标下的基准尺寸。
+ * 200×30 是两个参考实现用的值（kipphi-player 的 NOTE_WIDTH/NOTE_HEIGHT），
+ * 也正好等于游戏里音符占屏宽的比例（约 15% × 3.3%）。
+ */
+const NOTE_WIDTH = 200;
+const NOTE_HEIGHT = 30;
+/** 拖曳音符比点按薄（PhiEdit 的 Drag2 贴图高度是 Tap2 的 0.6） */
+const DRAG_HEIGHT = 18;
 
 /** 判定线上的文字：世界坐标下的字号（playfield 高 900），以及 Pixi 文字对象用的基准字号 */
 const TEXT_FONT_UNITS = 56;
@@ -36,10 +41,14 @@ const LINE_THICKNESS = DEFAULT_LINE_UNITS[1];
 /** 打击特效持续时长，秒 */
 const HIT_EFFECT_SECONDS = 0.28;
 
-const COLOR_TAP = 0x8ac6ff;
-const COLOR_DRAG = 0xffd166;
-const COLOR_FLICK = 0xff8fb1;
-const COLOR_HOLD = 0x8ac6ff;
+/**
+ * 音符配色直接取自 PhiEdit 自带的音符贴图（`Resources/Texture/Tap2.png` 等），
+ * 也就是制谱者在编辑器预览里看到的那个观感：饱和的青 / 黄 / 粉，不是淡彩。
+ */
+const COLOR_TAP = 0x0ac3ff; // Tap2.png 主体色 rgb(10,195,255)
+const COLOR_DRAG = 0xf0ed69; // Drag2.png rgb(240,237,105)
+const COLOR_FLICK = 0xfe4365; // Flick2.png rgb(254,67,101)
+const COLOR_HOLD = 0x99e6fc; // HoldHead.png / Hold3.png rgb(153,230,252)
 
 const GRADE_COLOR: Record<Grade, number> = {
   [Grade.Perfect]: 0x9be7ff,
@@ -56,14 +65,72 @@ interface LineTransform {
   alpha: number;
 }
 
-function makeNoteTexture(app: Application, width: number, height: number, color: number): Texture {
+/**
+ * 音符贴图。形状照着 PhiEdit 的内置贴图来：
+ * - 点按 / 拖曳：白色圆角外框 + 中间一条饱和色带（上下各留约 22% 白边）
+ * - 滑动：同一套白框 + 粉色色带，再加一个朝上的白色尖角
+ * - 长按头：实心浅青（HoldHead.png 就是一块实心色）
+ */
+function makeNoteTexture(
+  app: Application,
+  width: number,
+  height: number,
+  color: number,
+  style: 'bar' | 'flick' | 'holdHead',
+): Texture {
   const g = new Graphics();
-  // 主体 + 顶部亮边，做出一点立体感
-  g.roundRect(-width / 2, -height / 2, width, height, height * 0.32).fill(color);
-  g.roundRect(-width / 2, -height / 2, width, height * 0.28, height * 0.14).fill({
-    color: 0xffffff,
-    alpha: 0.35,
-  });
+  const radius = height * 0.34;
+  const bandTop = height * 0.22;
+
+  if (style === 'holdHead') {
+    g.roundRect(-width / 2, -height / 2, width, height, radius).fill(color);
+    g.roundRect(-width / 2, -height / 2, width, height * 0.3, radius * 0.6).fill({
+      color: 0xffffff,
+      alpha: 0.4,
+    });
+  } else {
+    // 白色外框（flick 的外框略矮一点）
+    const frameInset = style === 'flick' ? height * 0.14 : 0;
+    g.roundRect(-width / 2, -height / 2 + frameInset, width, height - frameInset * 2, radius).fill(
+      0xffffff,
+    );
+    // 中间色带
+    const bandHeight = Math.max(height - bandTop * 2, height * 0.3);
+    const bandInset = width * 0.02;
+    g.roundRect(
+      -width / 2 + bandInset,
+      -bandHeight / 2,
+      width - bandInset * 2,
+      bandHeight,
+      radius * 0.45,
+    ).fill(color);
+    if (style === 'flick') {
+      // 朝上的白色尖角（flick 的识别标志）
+      g.poly([-width * 0.16, height * 0.2, width * 0.16, height * 0.2, 0, -height * 0.3]).fill(
+        0xffffff,
+      );
+    }
+  }
+
+  const tex = app.renderer.generateTexture({ target: g, resolution: 2 });
+  g.destroy();
+  return tex;
+}
+
+/**
+ * 长按条的身体贴图：竖直方向的**透明度渐变**（远端 39% → 靠头端 99%），
+ * 数值取自 Hold3.png —— 之前用一块实心条再统一乘 0.55，观感是「一块半透明板」，
+ * 和游戏里「越靠近判定线越实」的渐变条不一样。
+ */
+function makeHoldBodyTexture(app: Application, width: number, color: number): Texture {
+  const g = new Graphics();
+  const slices = 32;
+  const h = 128;
+  for (let i = 0; i < slices; i++) {
+    const t0 = i / slices;
+    const alpha = 0.39 + (0.99 - 0.39) * t0;
+    g.rect(-width / 2, -h / 2 + (h * i) / slices, width, h / slices + 1).fill({ color, alpha });
+  }
   const tex = app.renderer.generateTexture({ target: g, resolution: 2 });
   g.destroy();
   return tex;
@@ -188,20 +255,23 @@ export class ChartRenderer {
 
     this.fallbackLineTex = makeBarTexture(app, 0xffffff, 3);
 
-    this.taps = new SpritePool(this.noteLayer, makeNoteTexture(app, NOTE_WIDTH, NOTE_HEIGHT, COLOR_TAP));
+    this.taps = new SpritePool(
+      this.noteLayer,
+      makeNoteTexture(app, NOTE_WIDTH, NOTE_HEIGHT, COLOR_TAP, 'bar'),
+    );
     this.drags = new SpritePool(
       this.noteLayer,
-      makeNoteTexture(app, NOTE_WIDTH, DRAG_HEIGHT, COLOR_DRAG),
+      makeNoteTexture(app, NOTE_WIDTH, DRAG_HEIGHT, COLOR_DRAG, 'bar'),
     );
     this.flicks = new SpritePool(
       this.noteLayer,
-      makeNoteTexture(app, NOTE_WIDTH, NOTE_HEIGHT, COLOR_FLICK),
+      makeNoteTexture(app, NOTE_WIDTH, NOTE_HEIGHT, COLOR_FLICK, 'flick'),
     );
     this.holdHeads = new SpritePool(
       this.noteLayer,
-      makeNoteTexture(app, NOTE_WIDTH, NOTE_HEIGHT, COLOR_HOLD),
+      makeNoteTexture(app, NOTE_WIDTH, NOTE_HEIGHT, COLOR_HOLD, 'holdHead'),
     );
-    this.holdBodies = new SpritePool(this.noteLayer, makeBarTexture(app, COLOR_HOLD));
+    this.holdBodies = new SpritePool(this.noteLayer, makeHoldBodyTexture(app, NOTE_WIDTH, COLOR_HOLD));
     this.effects = new SpritePool(this.noteLayer, makeRingTexture(app));
   }
 
@@ -562,7 +632,12 @@ export class ChartRenderer {
           body.rotation = -t.theta;
           body.width = noteWidth * scale;
           body.height = Math.hypot(sx - tx, sy - ty);
-          body.alpha = note.alpha * 0.55;
+          /*
+           * 贴图是「靠头那端实、远端虚」的渐变，判定线下面的音符要上下翻一下，
+           * 不然渐变会装反（Below 音符的头在屏幕上方）。
+           */
+          if (!note.above) body.scale.y *= -1;
+          body.alpha = note.alpha;
         }
 
         const pool =
