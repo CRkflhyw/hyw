@@ -172,6 +172,8 @@ export class ChartRenderer {
     holdsDrawn: 0,
     effectsDrawn: 0,
     byType: { tap: 0, hold: 0, flick: 0, drag: 0 },
+    /** 音符没被画出来的原因计数，排查「音符不见了」用 */
+    noteSkips: { alpha: 0, resolved: 0, notYetVisible: 0, past: 0, culled: 0 },
     bounds: { minX: 0, maxX: 0, minY: 0, maxY: 0 },
   };
 
@@ -326,6 +328,13 @@ export class ChartRenderer {
   }
 
   /**
+   * 调试开关：把谱面里「故意藏起来」的音符也画出来。
+   * 谱面有两种藏音符的手法：`visibleTime` 为负（上隐/全隐）、音符自身 alpha=0。
+   * 排查谱面时打开它，就能看出那些音符原本在哪。
+   */
+  showAllNotes = false;
+
+  /**
    * 把谱面渲染到 `seconds` 时刻的状态。
    * 传入 `session` 后会按判定状态决定音符画不画、并播打击特效。
    */
@@ -356,6 +365,7 @@ export class ChartRenderer {
     stats.holdsDrawn = 0;
     stats.effectsDrawn = 0;
     stats.byType = { tap: 0, hold: 0, flick: 0, drag: 0 };
+    stats.noteSkips = { alpha: 0, resolved: 0, notYetVisible: 0, past: 0, culled: 0 };
     stats.bounds = {
       minX: Number.POSITIVE_INFINITY,
       maxX: Number.NEGATIVE_INFINITY,
@@ -381,90 +391,92 @@ export class ChartRenderer {
       this.lineScale[index] = [scaleXValue, scaleYValue];
       this.lineAlpha[index] = t.alpha;
 
-      if (t.alpha <= 0.002) {
-        if (sprite) sprite.visible = false;
-        const text = this.textObjects[index];
-        if (text) text.visible = false;
-        continue;
-      }
-
+      // 判定线本体的透明度只影响线自己（和线上的文字），**不影响音符**：
+      // 游戏里「判定线消失」事件是很常用的手法 —— 线淡出，音符照常飞过来。
+      const lineVisible = t.alpha > 0.002;
       const cos = Math.cos(t.theta);
       const sin = Math.sin(t.theta);
       const lineX = centerX + t.x * scale;
       const lineY = centerY - t.y * scale;
-      const tint =
-        (((trackValueAt(line.colorR, beats) & 0xff) << 16) |
-          ((trackValueAt(line.colorG, beats) & 0xff) << 8) |
-          (trackValueAt(line.colorB, beats) & 0xff)) >>>
-        0;
-
-      // 判定线本体：贴图的自然尺寸 × 扩展事件的缩放 + 染色
-      if (sprite) {
-        const units = this.lineUnits[index] ?? [DEFAULT_LINE_UNITS[0], DEFAULT_LINE_UNITS[1]];
-        let sizeX = units[0] * scaleXValue * scale;
-        let sizeY = units[1] * scaleYValue * scale;
-
-        /*
-         * 有些谱面会写极端的缩放值（见过 scaleX=100、scaleY=200，算出来 40 万单位宽），
-         * 那是拿判定线当「铺满屏幕的色块」用。上限只是为了别让包围盒变成天文数字，
-         * 但**必须按轴各自压**：等比压会把细长条压成一根细棍，看起来就像「拉伸没生效」。
-         */
-        const maxSide = Math.hypot(width, height) * 3;
-        sizeX = Math.max(-maxSide, Math.min(maxSide, sizeX));
-        sizeY = Math.max(-maxSide, Math.min(maxSide, sizeY));
-
-        // 负的缩放值在 RPE 里是「绕 anchor 镜像」，这里把符号一起交给精灵
-        if (
-          Math.abs(lineX) > crazyLimit ||
-          Math.abs(lineY) > crazyLimit ||
-          Math.abs(sizeX) < 0.5 ||
-          Math.abs(sizeY) < 0.5
-        ) {
-          sprite.visible = false;
-        } else {
-          sprite.visible = true;
-          sprite.position.set(lineX, lineY);
-          sprite.rotation = -t.theta;
-          sprite.scale.set(sizeX / sprite.texture.width, sizeY / sprite.texture.height);
-          sprite.alpha = t.alpha;
-          sprite.tint = tint;
-          if (line.textureName !== 'line.png') stats.texturedLines++;
-          stats.linesDrawn++;
-        }
-      }
-
-      // 判定线上的文字（带文字事件的线只画这个）
-      const textEvent = textEventAt(line.text, beats);
-      const label = textAt(line.text, beats);
-      let textObj = this.textObjects[index];
-      if (!label) {
-        if (textObj) textObj.visible = false;
+      if (!lineVisible) {
+        if (sprite) sprite.visible = false;
+        const text = this.textObjects[index];
+        if (text) text.visible = false;
       } else {
-        if (!textObj) {
-          textObj = new Text({ text: label, style: TEXT_STYLE });
-          textObj.anchor.set(0.5);
-          this.textLayer.addChild(textObj);
-          this.textObjects[index] = textObj;
-        } else if (textObj.text !== label) {
-          textObj.text = label;
+        const tint =
+          (((trackValueAt(line.colorR, beats) & 0xff) << 16) |
+            ((trackValueAt(line.colorG, beats) & 0xff) << 8) |
+            (trackValueAt(line.colorB, beats) & 0xff)) >>>
+          0;
+
+        // 判定线本体：贴图的自然尺寸 × 扩展事件的缩放 + 染色
+        if (sprite) {
+          const units = this.lineUnits[index] ?? [DEFAULT_LINE_UNITS[0], DEFAULT_LINE_UNITS[1]];
+          let sizeX = units[0] * scaleXValue * scale;
+          let sizeY = units[1] * scaleYValue * scale;
+
+          /*
+           * 有些谱面会写极端的缩放值（见过 scaleX=100、scaleY=200，算出来 40 万单位宽），
+           * 那是拿判定线当「铺满屏幕的色块」用。上限只是为了别让包围盒变成天文数字，
+           * 但**必须按轴各自压**：等比压会把细长条压成一根细棍，看起来就像「拉伸没生效」。
+           */
+          const maxSide = Math.hypot(width, height) * 3;
+          sizeX = Math.max(-maxSide, Math.min(maxSide, sizeX));
+          sizeY = Math.max(-maxSide, Math.min(maxSide, sizeY));
+
+          // 负的缩放值在 RPE 里是「绕 anchor 镜像」，这里把符号一起交给精灵
+          if (
+            Math.abs(lineX) > crazyLimit ||
+            Math.abs(lineY) > crazyLimit ||
+            Math.abs(sizeX) < 0.5 ||
+            Math.abs(sizeY) < 0.5
+          ) {
+            sprite.visible = false;
+          } else {
+            sprite.visible = true;
+            sprite.position.set(lineX, lineY);
+            sprite.rotation = -t.theta;
+            sprite.scale.set(sizeX / sprite.texture.width, sizeY / sprite.texture.height);
+            sprite.alpha = t.alpha;
+            sprite.tint = tint;
+            if (line.textureName !== 'line.png') stats.texturedLines++;
+            stats.linesDrawn++;
+          }
         }
-        // 谱面里写的字体（cmdysj、Cambria Math…）多半没装，装了就用得上
-        const family = textEvent?.font.replace(/["']/g, '').trim() ?? '';
-        const fontFamily = family ? `"${family}", ${TEXT_FONT_FALLBACK}` : TEXT_FONT_FALLBACK;
-        if (this.textFonts[index] !== fontFamily) {
-          this.textFonts[index] = fontFamily;
-          textObj.style.fontFamily = fontFamily;
+
+        // 判定线上的文字（带文字事件的线只画这个）
+        const textEvent = textEventAt(line.text, beats);
+        const label = textAt(line.text, beats);
+        let textObj = this.textObjects[index];
+        if (!label) {
+          if (textObj) textObj.visible = false;
+        } else {
+          if (!textObj) {
+            textObj = new Text({ text: label, style: TEXT_STYLE });
+            textObj.anchor.set(0.5);
+            this.textLayer.addChild(textObj);
+            this.textObjects[index] = textObj;
+          } else if (textObj.text !== label) {
+            textObj.text = label;
+          }
+          // 谱面里写的字体（cmdysj、Cambria Math…）多半没装，装了就用得上
+          const family = textEvent?.font.replace(/["']/g, '').trim() ?? '';
+          const fontFamily = family ? `"${family}", ${TEXT_FONT_FALLBACK}` : TEXT_FONT_FALLBACK;
+          if (this.textFonts[index] !== fontFamily) {
+            this.textFonts[index] = fontFamily;
+            textObj.style.fontFamily = fontFamily;
+          }
+          const base = (TEXT_FONT_UNITS * scale) / TEXT_BASE_FONT_PX;
+          const scaleX = Math.min(Math.abs(scaleXValue), TEXT_MAX_SCALE);
+          const scaleY = Math.min(Math.abs(scaleYValue), TEXT_MAX_SCALE);
+          textObj.visible = true;
+          textObj.position.set(lineX, lineY);
+          textObj.rotation = -t.theta;
+          textObj.scale.set(base * scaleX, base * scaleY);
+          textObj.alpha = t.alpha;
+          textObj.tint = tint;
+          stats.textsDrawn++;
         }
-        const base = (TEXT_FONT_UNITS * scale) / TEXT_BASE_FONT_PX;
-        const scaleX = Math.min(Math.abs(scaleXValue), TEXT_MAX_SCALE);
-        const scaleY = Math.min(Math.abs(scaleYValue), TEXT_MAX_SCALE);
-        textObj.visible = true;
-        textObj.position.set(lineX, lineY);
-        textObj.rotation = -t.theta;
-        textObj.scale.set(base * scaleX, base * scaleY);
-        textObj.alpha = t.alpha;
-        textObj.tint = tint;
-        stats.textsDrawn++;
       }
 
       const lineFloor = lineFloors[index];
@@ -476,7 +488,11 @@ export class ChartRenderer {
       ];
 
       for (const note of line.notes) {
-        if (note.alpha <= a) continue;
+        // 音符自身的 alpha 为 0 = 作者把它藏起来了（调试开关可以无视）
+        if (note.alpha <= a && !this.showAllNotes) {
+          stats.noteSkips.alpha++;
+          continue;
+        }
 
         const runtime = session?.runtimeOf(note);
         const isHold = note.type === NoteType.Hold;
@@ -503,13 +519,21 @@ export class ChartRenderer {
               stats.effectsDrawn++;
             }
           }
+          stats.noteSkips.resolved++;
           continue;
         }
 
-        // visibleBeats 为 Infinity 表示全程可见，不能直接拿来比较
-        if (Number.isFinite(note.visibleBeats) && beats < note.visibleBeats) continue;
+        // visibleBeats 为 Infinity 表示全程可见，不能直接拿来比较。
+        // 负数 visibleTime 同理：作者就是在写「这个音符别出现」
+        if (!this.showAllNotes && Number.isFinite(note.visibleBeats) && beats < note.visibleBeats) {
+          stats.noteSkips.notYetVisible++;
+          continue;
+        }
         // 已经越过线就收起（长按持续到结束）
-        if (beats > note.endBeats) continue;
+        if (beats > note.endBeats) {
+          stats.noteSkips.past++;
+          continue;
+        }
 
         // 头部到达后钉在判定线上，尾部继续靠近 —— 长按条因此会逐帧缩短
         const headOffset = beats >= note.startBeats ? note.yOffset : offsetFor(note.startBeats);
@@ -524,6 +548,7 @@ export class ChartRenderer {
 
         const [sx, sy] = project(localX, dir * headOffset);
         if (sx < -marginX || sx > width + marginX || sy < -marginY || sy > height + marginY) {
+          stats.noteSkips.culled++;
           continue;
         }
 
@@ -535,7 +560,7 @@ export class ChartRenderer {
           body.rotation = -t.theta;
           body.width = noteWidth * scale;
           body.height = Math.hypot(sx - tx, sy - ty);
-          body.alpha = note.alpha * t.alpha * 0.55;
+          body.alpha = note.alpha * 0.55;
         }
 
         const pool =
@@ -552,7 +577,8 @@ export class ChartRenderer {
         noteSprite.rotation = -t.theta;
         noteSprite.width = noteWidth * scale;
         noteSprite.height = noteHeightPx;
-        noteSprite.alpha = note.alpha * t.alpha;
+        // 音符只受自己 alpha 影响（不受判定线透明度影响）
+        noteSprite.alpha = this.showAllNotes ? Math.max(note.alpha, 0.55) : note.alpha;
         // 假音符（装饰用、不参与判定）压低透明度以便区分
         if (note.isFake) noteSprite.alpha *= 0.55;
 

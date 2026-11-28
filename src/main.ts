@@ -510,6 +510,11 @@ declare global {
       /** 某条判定线当前的渲染参数，排查贴图尺寸/位置用 */
       lineInfo(index: number): Record<string, unknown> | null;
       /**
+       * 谱面可以用 visibleTime<0 / alpha=0 把音符藏起来（上隐、全隐玩法）。
+       * 打开这个开关后这些音符也会画出来，用来核对谱面里到底有什么。
+       */
+      showAllNotes(on?: boolean): boolean;
+      /**
        * 把当前画面导出成 PNG 的 base64。
        * 用 Pixi 自己的离屏导出，**不经过浏览器合成器** ——
        * 标签页不可见时截图会失败，但这个方法照样能拿到画面。
@@ -577,6 +582,15 @@ window.hyw = {
   screen: () => screen,
   open: (url: string, name = 'chart') => openFromLibrary(url, name),
   lineInfo: (index: number) => renderer.describeLine(index),
+  showAllNotes(on = true): boolean {
+    renderer.showAllNotes = on;
+    if (chart) {
+      // 立刻按当前时刻重画一帧，暂停中也能看到效果
+      renderer.render(chart, chartSeconds() - chart.meta.offset, playMode ? session : undefined);
+      app.render();
+    }
+    return renderer.showAllNotes;
+  },
   snapshot: () => {
     // 先把画面渲染一次，保证导出的内容和刚才定位的时刻一致
     app.render();
