@@ -488,13 +488,20 @@ export class ChartRenderer {
           let sizeY = units[1] * scaleYValue * scale;
 
           /*
-           * 有些谱面会写极端的缩放值（见过 scaleX=100、scaleY=200，算出来 40 万单位宽），
-           * 那是拿判定线当「铺满屏幕的色块」用。上限只是为了别让包围盒变成天文数字，
-           * 但**必须按轴各自压**：等比压会把细长条压成一根细棍，看起来就像「拉伸没生效」。
+           * 两条轴的缩放分开算：`scaleX` 是线**长度**的倍数、`scaleY` 是**厚度**的倍数。
+           *
+           * 幕布类判定线（拿默认线铺满屏幕当黑场/白闪用）靠的是纵向：作者的配方是
+           * `scaleX=1` + `scaleY=200~300`（本谱面的 272 号线就是 scaleX=1、scaleY=300）。
+           * 因为默认 `line.png` 本身有 4000 单位长（约 3 个屏宽），横向再放大在画面上
+           * 完全看不出来 —— 0 号线的 scaleX=100 就是这么个孤立值，不改变观感。
+           *
+           * 上限按轴各限「3 屏」：只是为了别让包围盒变成天文数字。按轴而不是等比，
+           * 铺满屏幕的细长条才不会被压成一根细棍。
            */
-          const maxSide = Math.hypot(width, height) * 3;
-          sizeX = Math.max(-maxSide, Math.min(maxSide, sizeX));
-          sizeY = Math.max(-maxSide, Math.min(maxSide, sizeY));
+          const maxX = width * 3;
+          const maxY = height * 3;
+          sizeX = Math.max(-maxX, Math.min(maxX, sizeX));
+          sizeY = Math.max(-maxY, Math.min(maxY, sizeY));
 
           // 负的缩放值在 RPE 里是「绕 anchor 镜像」，这里把符号一起交给精灵
           if (
