@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "check": "tsc --noEmit",
-    "check:judgment": "rolldown tools/judgment-check.ts -o .tmp/judgment-check.mjs --format esm --platform node && node .tmp/judgment-check.mjs"
+    "check:judgment": "rolldown tools/judgment-check.ts -o .tmp/judgment-check.mjs --format esm --platform node && node .tmp/judgment-check.mjs",
+    "check:text": "rolldown tools/text-check.ts -o .tmp/text-check.mjs --format esm --platform node && node .tmp/text-check.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.3",

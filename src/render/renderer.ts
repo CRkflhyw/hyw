@@ -1,5 +1,7 @@
-import { Container, Graphics, Sprite, Texture, type Application } from 'pixi.js';
-import { trackValueAt } from '../chart/parse';
+import { Container, Graphics, Sprite, Text, Texture, type Application } from 'pixi.js';
+import { textAt, textEventAt, trackValueAt } from '../chart/parse';
+import type { LineTextures } from '../chart/textures';
+import { DEFAULT_LINE_UNITS } from '../chart/textures';
 import { NoteType, type Chart, type JudgeLine } from '../chart/types';
 import { Grade } from '../game/judgment';
 import type { PlaySession } from '../game/session';
@@ -14,8 +16,22 @@ const PLAYFIELD_HEIGHT = 900;
 const NOTE_WIDTH = 170;
 const NOTE_HEIGHT = 34;
 const DRAG_HEIGHT = 26;
-/** 判定线在 RPE 坐标下的粗细 */
-const LINE_THICKNESS = 7;
+
+/** 判定线上的文字：世界坐标下的字号（playfield 高 900），以及 Pixi 文字对象用的基准字号 */
+const TEXT_FONT_UNITS = 56;
+const TEXT_BASE_FONT_PX = 64;
+/** 谱面里写的字体基本都没装，后面这串是兜底 */
+const TEXT_FONT_FALLBACK = '"Segoe UI", "Microsoft YaHei", system-ui, sans-serif';
+/** 文字跟着判定线的扩展缩放走，但别让离谱的值把画布撑爆 */
+const TEXT_MAX_SCALE = 20;
+const TEXT_STYLE = {
+  fontFamily: TEXT_FONT_FALLBACK,
+  fontSize: TEXT_BASE_FONT_PX,
+  fill: 0xffffff,
+};
+
+/** 兜底判定线（真实 line.png 是游戏内置资源，谱面包里通常没有） */
+const LINE_THICKNESS = DEFAULT_LINE_UNITS[1];
 
 /** 打击特效持续时长，秒 */
 const HIT_EFFECT_SECONDS = 0.28;
@@ -110,8 +126,11 @@ class SpritePool {
 }
 
 export class ChartRenderer {
-  private readonly belowLines: SpritePool;
-  private readonly coverLines: SpritePool;
+  private readonly belowLayer = new Container();
+  private readonly textLayer = new Container();
+  private readonly noteLayer = new Container();
+  private readonly coverLayer = new Container();
+
   private readonly taps: SpritePool;
   private readonly drags: SpritePool;
   private readonly flicks: SpritePool;
@@ -119,7 +138,22 @@ export class ChartRenderer {
   private readonly holdBodies: SpritePool;
   private readonly effects: SpritePool;
 
-  private readonly lineTex: Texture;
+  private readonly fallbackLineTex: Texture;
+
+  /** 每条判定线一个精灵 —— 贴图各不相同，用对象池不划算 */
+  private lineSprites: (Sprite | null)[] = [];
+  /** 每条线的贴图自然尺寸（RPE 单位） */
+  private lineUnits: [number, number][] = [];
+  private lineTextureNames: string[] = [];
+  /** 带文字事件的线只画文字，不画判定线本体 */
+  private isTextLine: boolean[] = [];
+  private textObjects: (Text | null)[] = [];
+  /** 已经设给文字对象的字体，避免每帧都让 Pixi 重画贴图 */
+  private textFonts: string[] = [];
+  /** 最近一帧每条线算出来的扩展缩放，调试用 */
+  private lineScale: [number, number][] = [];
+  /** 最近一帧每条线的当前不透明度（sprite.alpha 被隐藏时会停在旧值，这里存真值） */
+  private lineAlpha: number[] = [];
 
   /** 按 zOrder 排好的绘制顺序 */
   private drawOrder: number[] = [];
@@ -132,6 +166,8 @@ export class ChartRenderer {
   readonly lastFrame = {
     beats: 0,
     linesDrawn: 0,
+    texturedLines: 0,
+    textsDrawn: 0,
     notesDrawn: 0,
     holdsDrawn: 0,
     effectsDrawn: 0,
@@ -140,36 +176,32 @@ export class ChartRenderer {
   };
 
   constructor(private readonly app: Application) {
-    const root = new Container();
-    app.stage.addChild(root);
+    app.stage.addChild(this.belowLayer, this.textLayer, this.noteLayer, this.coverLayer);
 
-    const belowLayer = new Container();
-    const noteLayer = new Container();
-    const coverLayer = new Container();
-    root.addChild(belowLayer, noteLayer, coverLayer);
+    this.fallbackLineTex = makeBarTexture(app, 0xffffff, 3);
 
-    this.lineTex = makeBarTexture(app, 0xffffff, 3);
-
-    this.belowLines = new SpritePool(belowLayer, this.lineTex);
-    this.coverLines = new SpritePool(coverLayer, this.lineTex);
-    this.taps = new SpritePool(noteLayer, makeNoteTexture(app, NOTE_WIDTH, NOTE_HEIGHT, COLOR_TAP));
+    this.taps = new SpritePool(this.noteLayer, makeNoteTexture(app, NOTE_WIDTH, NOTE_HEIGHT, COLOR_TAP));
     this.drags = new SpritePool(
-      noteLayer,
+      this.noteLayer,
       makeNoteTexture(app, NOTE_WIDTH, DRAG_HEIGHT, COLOR_DRAG),
     );
     this.flicks = new SpritePool(
-      noteLayer,
+      this.noteLayer,
       makeNoteTexture(app, NOTE_WIDTH, NOTE_HEIGHT, COLOR_FLICK),
     );
     this.holdHeads = new SpritePool(
-      noteLayer,
+      this.noteLayer,
       makeNoteTexture(app, NOTE_WIDTH, NOTE_HEIGHT, COLOR_HOLD),
     );
-    this.holdBodies = new SpritePool(noteLayer, makeBarTexture(app, COLOR_HOLD));
-    this.effects = new SpritePool(noteLayer, makeRingTexture(app));
+    this.holdBodies = new SpritePool(this.noteLayer, makeBarTexture(app, COLOR_HOLD));
+    this.effects = new SpritePool(this.noteLayer, makeRingTexture(app));
   }
 
-  setChart(chart: Chart): void {
+  setChart(chart: Chart, textures: LineTextures): void {
+    this.belowLayer.removeChildren();
+    this.coverLayer.removeChildren();
+    this.textLayer.removeChildren();
+
     this.drawOrder = chart.lines
       .map((l, i) => ({ i, z: l.zOrder }))
       .sort((a, b) => a.z - b.z)
@@ -177,6 +209,40 @@ export class ChartRenderer {
     this.coverSet = new Set(
       chart.lines.map((l, i) => (l.isCover ? i : -1)).filter((i) => i >= 0),
     );
+
+    this.lineUnits = textures.unitsByLine;
+    this.lineTextureNames = chart.lines.map((l) => l.textureName);
+    this.isTextLine = chart.lines.map((l) => l.text.events.length > 0);
+    this.lineSprites = [];
+    this.textObjects = [];
+    this.textFonts = [];
+    this.lineScale = [];
+    this.lineAlpha = [];
+
+    for (const [index, line] of chart.lines.entries()) {
+      /*
+       * 带文字事件的线在 RPE 里只显示文字 —— 它自己的贴图（哪怕填了图）根本不画。
+       * 两个独立实现都是这么处理的（kipphi-player 的 hasText 分支、
+       * phi-chart-render 的 isText 分支），照着来。
+       */
+      if (this.isTextLine[index]) {
+        this.lineSprites.push(null);
+        continue;
+      }
+      const texture = textures.map.get(line.textureName) ?? this.fallbackLineTex;
+      const sprite = new Sprite(texture);
+      // anchor 是判定线的旋转/缩放原点，RPE 谱面里几乎都是 [0.5, 0.5]
+      sprite.anchor.set(line.anchor[0], line.anchor[1]);
+      sprite.visible = false;
+      this.lineSprites.push(sprite);
+    }
+
+    // 按 zOrder 把精灵挂进对应图层（isCover 的线要盖在音符上面）
+    for (const index of this.drawOrder) {
+      const sprite = this.lineSprites[index];
+      if (!sprite) continue;
+      (this.coverSet.has(index) ? this.coverLayer : this.belowLayer).addChild(sprite);
+    }
   }
 
   /**
@@ -229,6 +295,37 @@ export class ChartRenderer {
   }
 
   /**
+   * 某条判定线当前的计算结果。用于调试渲染问题（比如贴图尺寸算得对不对），
+   * 也方便自动化验证 —— 标签页不可见时截图不可靠。
+   */
+  describeLine(index: number): Record<string, unknown> | null {
+    if (index < 0 || index >= this.lineTextureNames.length) return null;
+    const sprite = this.lineSprites[index];
+    const text = this.textObjects[index];
+    const units = this.lineUnits[index] ?? DEFAULT_LINE_UNITS;
+    const [scaleX, scaleY] = this.lineScale[index] ?? [null, null];
+    return {
+      texture: this.lineTextureNames[index],
+      isTextLine: this.isTextLine[index],
+      naturalUnits: [units[0], units[1]],
+      // 谱面里写的就是这两个值：1 = 贴图自然大小，负数是镜像
+      scaleX,
+      scaleY,
+      // 只有真的画出来了，屏幕尺寸才有意义（隐藏时精灵里是上一帧的旧值）
+      screenWidth: sprite?.visible ? Math.round(sprite.width) : null,
+      screenHeight: sprite?.visible ? Math.round(sprite.height) : null,
+      x: Math.round((sprite ?? text)?.position.x ?? 0),
+      y: Math.round((sprite ?? text)?.position.y ?? 0),
+      rotationDeg: Math.round((((sprite ?? text)?.rotation ?? 0) * 180) / Math.PI),
+      alpha: Number((this.lineAlpha[index] ?? 0).toFixed(3)),
+      visible: sprite ? sprite.visible : text ? text.visible : false,
+      text: text?.visible ? text.text : null,
+      textFont: this.textFonts[index] ?? null,
+      textFontUnits: TEXT_FONT_UNITS,
+    };
+  }
+
+  /**
    * 把谱面渲染到 `seconds` 时刻的状态。
    * 传入 `session` 后会按判定状态决定音符画不画、并播打击特效。
    */
@@ -243,8 +340,6 @@ export class ChartRenderer {
     const transforms = this.resolveTransforms(chart, beats);
     const lineFloors = chart.lines.map((line) => line.speed.floorAt(beats));
 
-    this.belowLines.begin();
-    this.coverLines.begin();
     this.taps.begin();
     this.drags.begin();
     this.flicks.begin();
@@ -255,6 +350,8 @@ export class ChartRenderer {
     const stats = this.lastFrame;
     stats.beats = beats;
     stats.linesDrawn = 0;
+    stats.texturedLines = 0;
+    stats.textsDrawn = 0;
     stats.notesDrawn = 0;
     stats.holdsDrawn = 0;
     stats.effectsDrawn = 0;
@@ -269,29 +366,105 @@ export class ChartRenderer {
     // 屏幕外多留一些余量，避免边缘音符突然消失
     const marginX = width * 0.5;
     const marginY = height * 0.5;
-    const lineHalfWidth = (width / scale) * 0.75;
-    const lineWidthPx = lineHalfWidth * 2 * scale;
+    /** 位置离谱到这个程度就直接不画，免得出现天文数字的坐标 */
+    const crazyLimit = width * 40;
 
     for (const index of this.drawOrder) {
       const line = chart.lines[index];
       const t = transforms[index];
-      if (t.alpha <= 0.002) continue;
+      const sprite = this.lineSprites[index];
+
+      // 判定线的拉伸/缩放完全由扩展的 scaleX/scaleY 决定（1 = 贴图自然大小）
+      const scaleXValue = trackValueAt(line.scaleX, beats);
+      const scaleYValue = trackValueAt(line.scaleY, beats);
+      // 调试信息每帧都记，被隐藏的线也要能查到当前值
+      this.lineScale[index] = [scaleXValue, scaleYValue];
+      this.lineAlpha[index] = t.alpha;
+
+      if (t.alpha <= 0.002) {
+        if (sprite) sprite.visible = false;
+        const text = this.textObjects[index];
+        if (text) text.visible = false;
+        continue;
+      }
 
       const cos = Math.cos(t.theta);
       const sin = Math.sin(t.theta);
       const lineX = centerX + t.x * scale;
       const lineY = centerY - t.y * scale;
+      const tint =
+        (((trackValueAt(line.colorR, beats) & 0xff) << 16) |
+          ((trackValueAt(line.colorG, beats) & 0xff) << 8) |
+          (trackValueAt(line.colorB, beats) & 0xff)) >>>
+        0;
 
-      // 判定线本身
-      if (lineX > -marginX - lineWidthPx && lineX < width + marginX + lineWidthPx) {
-        const pool = this.coverSet.has(index) ? this.coverLines : this.belowLines;
-        const sprite = pool.next();
-        sprite.position.set(lineX, lineY);
-        sprite.rotation = -t.theta;
-        sprite.width = lineWidthPx;
-        sprite.height = LINE_THICKNESS * scale;
-        sprite.alpha = t.alpha;
-        stats.linesDrawn++;
+      // 判定线本体：贴图的自然尺寸 × 扩展事件的缩放 + 染色
+      if (sprite) {
+        const units = this.lineUnits[index] ?? [DEFAULT_LINE_UNITS[0], DEFAULT_LINE_UNITS[1]];
+        let sizeX = units[0] * scaleXValue * scale;
+        let sizeY = units[1] * scaleYValue * scale;
+
+        /*
+         * 有些谱面会写极端的缩放值（见过 scaleX=100、scaleY=200，算出来 40 万单位宽），
+         * 那是拿判定线当「铺满屏幕的色块」用。上限只是为了别让包围盒变成天文数字，
+         * 但**必须按轴各自压**：等比压会把细长条压成一根细棍，看起来就像「拉伸没生效」。
+         */
+        const maxSide = Math.hypot(width, height) * 3;
+        sizeX = Math.max(-maxSide, Math.min(maxSide, sizeX));
+        sizeY = Math.max(-maxSide, Math.min(maxSide, sizeY));
+
+        // 负的缩放值在 RPE 里是「绕 anchor 镜像」，这里把符号一起交给精灵
+        if (
+          Math.abs(lineX) > crazyLimit ||
+          Math.abs(lineY) > crazyLimit ||
+          Math.abs(sizeX) < 0.5 ||
+          Math.abs(sizeY) < 0.5
+        ) {
+          sprite.visible = false;
+        } else {
+          sprite.visible = true;
+          sprite.position.set(lineX, lineY);
+          sprite.rotation = -t.theta;
+          sprite.scale.set(sizeX / sprite.texture.width, sizeY / sprite.texture.height);
+          sprite.alpha = t.alpha;
+          sprite.tint = tint;
+          if (line.textureName !== 'line.png') stats.texturedLines++;
+          stats.linesDrawn++;
+        }
+      }
+
+      // 判定线上的文字（带文字事件的线只画这个）
+      const textEvent = textEventAt(line.text, beats);
+      const label = textAt(line.text, beats);
+      let textObj = this.textObjects[index];
+      if (!label) {
+        if (textObj) textObj.visible = false;
+      } else {
+        if (!textObj) {
+          textObj = new Text({ text: label, style: TEXT_STYLE });
+          textObj.anchor.set(0.5);
+          this.textLayer.addChild(textObj);
+          this.textObjects[index] = textObj;
+        } else if (textObj.text !== label) {
+          textObj.text = label;
+        }
+        // 谱面里写的字体（cmdysj、Cambria Math…）多半没装，装了就用得上
+        const family = textEvent?.font.replace(/["']/g, '').trim() ?? '';
+        const fontFamily = family ? `"${family}", ${TEXT_FONT_FALLBACK}` : TEXT_FONT_FALLBACK;
+        if (this.textFonts[index] !== fontFamily) {
+          this.textFonts[index] = fontFamily;
+          textObj.style.fontFamily = fontFamily;
+        }
+        const base = (TEXT_FONT_UNITS * scale) / TEXT_BASE_FONT_PX;
+        const scaleX = Math.min(Math.abs(scaleXValue), TEXT_MAX_SCALE);
+        const scaleY = Math.min(Math.abs(scaleYValue), TEXT_MAX_SCALE);
+        textObj.visible = true;
+        textObj.position.set(lineX, lineY);
+        textObj.rotation = -t.theta;
+        textObj.scale.set(base * scaleX, base * scaleY);
+        textObj.alpha = t.alpha;
+        textObj.tint = tint;
+        stats.textsDrawn++;
       }
 
       const lineFloor = lineFloors[index];
@@ -374,14 +547,14 @@ export class ChartRenderer {
                 ? this.flicks
                 : this.taps;
 
-        const sprite = pool.next();
-        sprite.position.set(sx, sy);
-        sprite.rotation = -t.theta;
-        sprite.width = noteWidth * scale;
-        sprite.height = noteHeightPx;
-        sprite.alpha = note.alpha * t.alpha;
+        const noteSprite = pool.next();
+        noteSprite.position.set(sx, sy);
+        noteSprite.rotation = -t.theta;
+        noteSprite.width = noteWidth * scale;
+        noteSprite.height = noteHeightPx;
+        noteSprite.alpha = note.alpha * t.alpha;
         // 假音符（装饰用、不参与判定）压低透明度以便区分
-        if (note.isFake) sprite.alpha *= 0.55;
+        if (note.isFake) noteSprite.alpha *= 0.55;
 
         stats.notesDrawn++;
         if (isHold) stats.holdsDrawn++;
@@ -396,8 +569,6 @@ export class ChartRenderer {
       }
     }
 
-    this.belowLines.end();
-    this.coverLines.end();
     this.taps.end();
     this.drags.end();
     this.flicks.end();

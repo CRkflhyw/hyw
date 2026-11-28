@@ -3,3 +3,6 @@ dist/
 .tmp/
 *.local
 .DS_Store
+
+# 第三方谱面（测试用，不要公开）
+charts/Algebra.pez

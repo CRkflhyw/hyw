@@ -5,6 +5,7 @@ import {
   type BpmSegment,
   type Chart,
   type ChartDataRPE,
+  type ColorEventData,
   type EventData,
   type EventLayerData,
   type EventTrack,
@@ -13,6 +14,9 @@ import {
   type Note,
   type NoteData,
   type SpeedTrack,
+  type TextEventData,
+  type TextKeyframe,
+  type TextTrack,
   type TimeMap,
   type TimeT,
 } from './types';
@@ -279,6 +283,87 @@ function parseNote(
   };
 }
 
+/** 把 [r,g,b] 形式的颜色事件拆成单通道的数字通道 */
+function buildColorTrack(
+  events: ColorEventData[] | undefined,
+  channel: number,
+  defaultValue: number,
+): EventTrack {
+  if (!events || events.length === 0) return { events: [], defaultValue };
+
+  const parsed = events
+    .map((e) => {
+      const startBeats = beatOf(e.startTime);
+      return {
+        startBeats,
+        endBeats: Math.max(beatOf(e.endTime), startBeats),
+        start: Array.isArray(e.start) ? (e.start[channel] ?? defaultValue) : defaultValue,
+        end: Array.isArray(e.end) ? (e.end[channel] ?? defaultValue) : defaultValue,
+        ease: makeEasing(e),
+      };
+    })
+    .sort((a, b) => a.startBeats - b.startBeats);
+
+  return { events: parsed, defaultValue };
+}
+
+/** 文字通道。文字不做插值，只按事件顺序切换。 */
+function buildTextTrack(events: TextEventData[] | undefined): TextTrack {
+  if (!events || events.length === 0) return { events: [] };
+  const parsed = events
+    .map((e) => {
+      const startBeats = beatOf(e.startTime);
+      const text = String(e.start ?? '');
+      const endText = String(e.end ?? '');
+      return {
+        startBeats,
+        endBeats: Math.max(beatOf(e.endTime), startBeats),
+        text,
+        endText,
+        // start 空、end 非空 = RPE 的「打字机」，随时间一个字一个字露出来
+        typewriter: text === '' && endText !== '',
+        font: String(e.font ?? ''),
+        ease: makeEasing(e),
+      };
+    })
+    // 全空的文字事件是用来「清掉」判定线上已有的文字的，不能过滤掉
+    .sort((a, b) => a.startBeats - b.startBeats);
+  return { events: parsed };
+}
+
+/** `beats` 时刻生效的文字事件，没有就是 null */
+export function textEventAt(track: TextTrack, beats: number): TextKeyframe | null {
+  // 找最后一个已经开始的事件；它会一直生效到下一个事件开始 ——
+  // 谱面里写的 endTime 管的是「文字什么时候换成 endText」，不管消失
+  for (let i = track.events.length - 1; i >= 0; i--) {
+    const e = track.events[i];
+    if (beats >= e.startBeats) return e;
+  }
+  return null;
+}
+
+/** 打字机效果：按缓动进度逐字显示 endText */
+function typewriterAt(e: TextKeyframe, beats: number): string {
+  const span = e.endBeats - e.startBeats;
+  if (span <= 0 || e.endText.length <= 1) return e.endText;
+  const progress = Math.min(Math.max((beats - e.startBeats) / span, 0), 1);
+  const index = Math.floor(e.ease(progress) * (e.endText.length - 1));
+  return e.endText.slice(0, index + 1);
+}
+
+/** `beats` 时刻这条判定线上该显示的文字，没有（或被清掉）返回 null */
+export function textAt(track: TextTrack, beats: number): string | null {
+  const event = textEventAt(track, beats);
+  if (!event) return null;
+  const text = event.typewriter
+    ? typewriterAt(event, beats)
+    : // 到 endTime 的那一帧就已经是 end 了（和参考实现的边界一致）
+      beats < event.endBeats
+      ? event.text
+      : event.endText;
+  return text === '' ? null : text;
+}
+
 /** 把多层事件层叠加起来。空层（null）跳过。 */
 function stackedTrack(
   layers: readonly (EventLayerData | null)[],
@@ -328,6 +413,7 @@ export function parseChart(data: ChartDataRPE): Chart {
 
   rawLines.forEach((raw: JudgeLineData, index: number) => {
     const layers = raw.eventLayers ?? [];
+    const ext = raw.extended ?? {};
 
     const notes = (raw.notes ?? [])
       .map((n) => parseNote(n, time))
@@ -355,6 +441,14 @@ export function parseChart(data: ChartDataRPE): Chart {
         time,
         endBeats,
       ),
+      textureName: raw.Texture ?? 'line.png',
+      // 扩展事件：缺省是「不缩放、不染色、无文字」
+      scaleX: buildTrack(ext.scaleXEvents, 1),
+      scaleY: buildTrack(ext.scaleYEvents, 1),
+      colorR: buildColorTrack(ext.colorEvents, 0, 255),
+      colorG: buildColorTrack(ext.colorEvents, 1, 255),
+      colorB: buildColorTrack(ext.colorEvents, 2, 255),
+      text: buildTextTrack(ext.textEvents),
       notes,
     });
     lineIndexById.set(index, index);

@@ -1,7 +1,8 @@
-import { Application } from 'pixi.js';
+import { Application, Rectangle } from 'pixi.js';
 import { SongClock } from './audio/clock';
 import { isPez, loadPez } from './chart/pez';
 import { parseChart } from './chart/parse';
+import { disposeLineTextures, loadLineTextures, type LineTextures } from './chart/textures';
 import type { Chart } from './chart/types';
 import { InputTracker } from './game/input';
 import { GRADE_LABEL, type Grade } from './game/judgment';
@@ -36,6 +37,8 @@ const clock = new SongClock(new AudioContext());
 let chart: Chart | null = null;
 let chartName = '';
 let artUrl: string | null = null;
+/** 当前谱面的判定线贴图，换谱面时要释放掉旧的 */
+let lineTextures: LineTextures | null = null;
 
 /** 观赏模式只按谱面播放，不判定；游玩模式才有判定和计分 */
 let playMode = true;
@@ -213,9 +216,15 @@ async function loadPezBuffer(buffer: ArrayBuffer, sourceName: string): Promise<v
       : DEFAULT_PLAYFIELD_ASPECT;
   const parsed = parseChart(pkg.chart);
 
+  // 判定线贴图：自制谱大量用图片当判定线，不加载的话全都会变成白条
+  setStatus('正在加载判定线贴图…');
+  const textures = await loadLineTextures(parsed, pkg.files);
+  if (lineTextures) disposeLineTextures(lineTextures);
+  lineTextures = textures;
+
   chart = parsed;
   chartName = sourceName;
-  renderer.setChart(parsed);
+  renderer.setChart(parsed, textures);
   session.setChart(parsed);
 
   clock.stop();
@@ -498,6 +507,14 @@ declare global {
       setMode(mode: 'play' | 'watch'): void;
       screen(): string;
       open(url: string, name?: string): Promise<void>;
+      /** 某条判定线当前的渲染参数，排查贴图尺寸/位置用 */
+      lineInfo(index: number): Record<string, unknown> | null;
+      /**
+       * 把当前画面导出成 PNG 的 base64。
+       * 用 Pixi 自己的离屏导出，**不经过浏览器合成器** ——
+       * 标签页不可见时截图会失败，但这个方法照样能拿到画面。
+       */
+      snapshot(): Promise<string>;
       readonly library: readonly { name: string; url: string }[];
       readonly clock: SongClock;
       readonly session: PlaySession;
@@ -527,6 +544,9 @@ window.hyw = {
       mode: playMode ? 'play' : 'watch',
       screen,
       seconds: Number(chartSeconds().toFixed(3)),
+      lineTextures: lineTextures ? lineTextures.map.size : 0,
+      missingTextures: lineTextures ? lineTextures.missing : [],
+      texturedLines: renderer.lastFrame.texturedLines,
     };
   },
   game(): Record<string, unknown> | null {
@@ -556,6 +576,21 @@ window.hyw = {
   },
   screen: () => screen,
   open: (url: string, name = 'chart') => openFromLibrary(url, name),
+  lineInfo: (index: number) => renderer.describeLine(index),
+  snapshot: () => {
+    // 先把画面渲染一次，保证导出的内容和刚才定位的时刻一致
+    app.render();
+    // 必须显式给 frame：不给的话 Pixi 会按整个 stage 的包围盒去算，
+    // 遇到尺寸离谱的判定线会申请几个 G 的缓冲直接崩掉
+    return app.renderer
+      .extract.base64({
+        target: app.stage,
+        frame: new Rectangle(0, 0, app.screen.width, app.screen.height),
+      })
+      // Pixi 返回的是完整 data URL，这里只留纯 base64 ——
+      // 直接拿带前缀的串去 base64 解码会字节错位，解出来不是 PNG
+      .then((url) => url.slice(url.indexOf(',') + 1));
+  },
   library: chartLibrary,
   clock,
   session,
