@@ -126,10 +126,17 @@ class SpritePool {
 }
 
 export class ChartRenderer {
-  private readonly belowLayer = new Container();
+  /**
+   * 所有判定线都在同一个容器里，按 zOrder 排 —— RPE 里 `zOrder` 就是「重叠顺序」
+   * （kipphi-player 也是直接按 zOrder 排完就画）。
+   *
+   * 注意别再用 `isCover` 决定层级：它只表示「这条线是遮罩」，不是「画在最上面」。
+   * 实测两个谱面里 isCover 全是 1（PhiEdit 的默认值），拿它分层会把所有线
+   * 都画到音符上面 —— Algebra 那条铺满屏幕的黑色幕布就是这么把字幕和音符盖住的。
+   */
+  private readonly lineLayer = new Container();
   private readonly textLayer = new Container();
   private readonly noteLayer = new Container();
-  private readonly coverLayer = new Container();
 
   private readonly taps: SpritePool;
   private readonly drags: SpritePool;
@@ -157,7 +164,6 @@ export class ChartRenderer {
 
   /** 按 zOrder 排好的绘制顺序 */
   private drawOrder: number[] = [];
-  private coverSet = new Set<number>();
 
   /**
    * 最近一帧的画面上有什么。
@@ -178,7 +184,7 @@ export class ChartRenderer {
   };
 
   constructor(private readonly app: Application) {
-    app.stage.addChild(this.belowLayer, this.textLayer, this.noteLayer, this.coverLayer);
+    app.stage.addChild(this.lineLayer, this.textLayer, this.noteLayer);
 
     this.fallbackLineTex = makeBarTexture(app, 0xffffff, 3);
 
@@ -200,17 +206,13 @@ export class ChartRenderer {
   }
 
   setChart(chart: Chart, textures: LineTextures): void {
-    this.belowLayer.removeChildren();
-    this.coverLayer.removeChildren();
+    this.lineLayer.removeChildren();
     this.textLayer.removeChildren();
 
     this.drawOrder = chart.lines
       .map((l, i) => ({ i, z: l.zOrder }))
       .sort((a, b) => a.z - b.z)
       .map((e) => e.i);
-    this.coverSet = new Set(
-      chart.lines.map((l, i) => (l.isCover ? i : -1)).filter((i) => i >= 0),
-    );
 
     this.lineUnits = textures.unitsByLine;
     this.lineTextureNames = chart.lines.map((l) => l.textureName);
@@ -239,11 +241,11 @@ export class ChartRenderer {
       this.lineSprites.push(sprite);
     }
 
-    // 按 zOrder 把精灵挂进对应图层（isCover 的线要盖在音符上面）
+    // 按 zOrder 把精灵挂进同一个图层：谱面里的 zOrder 就是重叠顺序
     for (const index of this.drawOrder) {
       const sprite = this.lineSprites[index];
       if (!sprite) continue;
-      (this.coverSet.has(index) ? this.coverLayer : this.belowLayer).addChild(sprite);
+      this.lineLayer.addChild(sprite);
     }
   }
 
@@ -529,7 +531,7 @@ export class ChartRenderer {
           stats.noteSkips.notYetVisible++;
           continue;
         }
-        // 已经越过线就收起（长按持续到结束）
+        // 已经越过线就收起（长按持续到结束）—— 假音符也是到这里就消失
         if (beats > note.endBeats) {
           stats.noteSkips.past++;
           continue;
@@ -577,10 +579,8 @@ export class ChartRenderer {
         noteSprite.rotation = -t.theta;
         noteSprite.width = noteWidth * scale;
         noteSprite.height = noteHeightPx;
-        // 音符只受自己 alpha 影响（不受判定线透明度影响）
+        // 音符只受自己 alpha 影响（不受判定线透明度影响）；假音符也不做半透明处理
         noteSprite.alpha = this.showAllNotes ? Math.max(note.alpha, 0.55) : note.alpha;
-        // 假音符（装饰用、不参与判定）压低透明度以便区分
-        if (note.isFake) noteSprite.alpha *= 0.55;
 
         stats.notesDrawn++;
         if (isHold) stats.holdsDrawn++;
